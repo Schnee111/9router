@@ -291,7 +291,43 @@ async function createBypassRequest(parsedUrl, realIP, options) {
   });
 }
 
+// OpenCode free-tier rotation: on 429 FreeUsageLimitError/Rate limit, rotate
+// the ProtonVPN container's exit IP and retry up to 3x via the proxy stack.
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
+  const targetUrl = typeof url === "string" ? url : url.toString();
+  const isOpencode = targetUrl.includes("opencode.ai");
+  if (isOpencode) {
+    const vpnOptions = {
+      ...(proxyOptions || {}),
+      connectionProxyEnabled: true,
+      connectionProxyUrl: "http://protonvpn-proxy:8888",
+    };
+    for (let rotAttempt = 0; rotAttempt < 3; rotAttempt++) {
+      const resp = await proxyAwareFetchCore(url, options, vpnOptions);
+      if (resp.status !== 429) {
+        return resp;
+      }
+      try {
+        const clone = resp.clone();
+        const text = await clone.text();
+        if (!text.includes("FreeUsageLimitError") && !text.includes("Rate limit")) return resp;
+      } catch {
+        // body unreadable — treat as rate limited and rotate
+      }
+      console.warn(`[ProxyFetch] OpenCode 429 hit (attempt ${rotAttempt + 1}/3), rotating VPN...`);
+      try {
+        await originalFetch("http://172.19.0.1:28880/rotate");
+        await new Promise((res) => setTimeout(res, 1200));
+      } catch (rotateError) {
+        console.error("[ProxyFetch] VPN rotate trigger failed:", rotateError.message);
+        return resp;
+      }
+    }
+  }
+  return proxyAwareFetchCore(url, options, proxyOptions);
+}
+
+async function proxyAwareFetchCore(url, options = {}, proxyOptions = null) {
   const targetUrl = typeof url === "string" ? url : url.toString();
 
   // Vercel relay: forward request via relay headers
