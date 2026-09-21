@@ -125,6 +125,9 @@ import p119 from "./selfhosted-embedding.js";
 import p120 from "./fish-audio.js";
 import p121 from "./alitp-intl.js";
 import p122 from "./xquik.js";
+import pCustomCodecraft from "./codecraft.js";
+import pCustomSekai from "./sekai.js";
+import pCustomInferx from "./inferx.js";
 export default [
   p0,
   p1,
@@ -250,4 +253,7 @@ export default [
   p120,
   p121,
   p122,
+  pCustomCodecraft,
+  pCustomSekai,
+  pCustomInferx,
 ];
