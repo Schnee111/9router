@@ -15,9 +15,14 @@ function extractLangFromPath(pathname) {
 
 export default function LanguageSwitcher({ currentLang }) {
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
   const current = getLanguage(currentLang);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Lock body scroll when modal is open
   useEffect(() => {
@@ -86,7 +91,7 @@ export default function LanguageSwitcher({ currentLang }) {
         <span className="sm:hidden">{current.flag}</span>
       </button>
 
-      {open && createPortal(modal, document.body)}
+      {mounted && open && createPortal(modal, document.body)}
     </>
   );
 }
