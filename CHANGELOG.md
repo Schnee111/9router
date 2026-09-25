@@ -1,3 +1,10 @@
+# v0.5.87 (2026-09-25)
+
+## Fixes
+- **OpenCode Zen egress**: fail closed on the forced OpenCode proxy path instead of silently re-issuing the request direct when the VPN proxy is unreachable; retry transient transport failures within a bounded budget, never retry a client abort or a non-replayable body, keep the original error as `cause` through the `strictProxy` re-wrap, and log `cause` on the remaining proxy-fallback warnings (over 24h of production traffic 256 of 582 OpenCode requests took that direct path)
+- **OpenCode VPN rotation**: return the last upstream response once the 429 rotation budget is spent instead of re-issuing the call outside the forced VPN path, which was a fourth direct-egress route
+- **Test coverage**: cover the fail-closed egress guarantees and the previously untested 429 -> ProtonVPN rotation path; the rotation test fails against the pre-fix implementation on the direct-call assertion
+
 # v0.5.86 (2026-09-23)
 
 ## Features
