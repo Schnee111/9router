@@ -39,6 +39,15 @@ function envMs(name, def) {
   return Number.isFinite(n) && n > 0 ? n : def;
 }
 
+// Parse a non-negative integer env override, falling back to a default.
+// Unlike envMs this accepts 0 (a legitimately meaningful retry budget).
+function envInt(name, def) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return def;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+}
+
 function envUrl(name, def) {
   const raw = process.env[name]?.trim();
   return raw || def;
@@ -60,6 +69,21 @@ export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);
+
+// OpenCode free-tier egress. Requests to opencode.ai are forced through the
+// VPN proxy container so the exit IP is never the VPS datacenter address.
+// TRANSPORT_RETRIES rides through transient proxy blips; once the budget is
+// spent the request fails instead of silently retrying from the datacenter IP.
+// Env: OPENCODE_PROXY_TRANSPORT_RETRIES / OPENCODE_PROXY_TRANSPORT_BACKOFF_MS.
+export const OPENCODE_PROXY_TRANSPORT_RETRIES = envInt("OPENCODE_PROXY_TRANSPORT_RETRIES", 2);
+export const OPENCODE_PROXY_TRANSPORT_BACKOFF_MS = envMs("OPENCODE_PROXY_TRANSPORT_BACKOFF_MS", 300);
+
+// strictProxy makes proxyAwareFetchCore throw instead of falling back to a
+// direct connection. Set OPENCODE_PROXY_STRICT=0 to restore the legacy
+// direct-fallback behaviour (never done for opencode traffic by default).
+export const OPENCODE_PROXY_STRICT = !["0", "false", "off"].includes(
+  (process.env.OPENCODE_PROXY_STRICT || "true").toLowerCase()
+);
 
 // Default token limits
 export const DEFAULT_MAX_TOKENS = 64000;
