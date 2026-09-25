@@ -1,5 +1,10 @@
 import { Readable } from "stream";
-import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import {
+  MEMORY_CONFIG,
+  OPENCODE_PROXY_STRICT,
+  OPENCODE_PROXY_TRANSPORT_BACKOFF_MS,
+  OPENCODE_PROXY_TRANSPORT_RETRIES,
+} from "../config/runtimeConfig.js";
 import { dbg } from "./debugLog.js";
 
 const originalFetch = globalThis.fetch;
@@ -291,6 +296,79 @@ async function createBypassRequest(parsedUrl, realIP, options) {
   });
 }
 
+// Flatten an undici fetch error chain. "fetch failed" alone hides the reason
+// (ECONNREFUSED, socket hang up, DNS, …), which makes egress incidents
+// undiagnosable from logs alone.
+function describeFetchCause(err) {
+  try {
+    const parts = [];
+    let cur = err?.cause;
+    let depth = 0;
+    while (cur && depth < 4) {
+      const label = cur.code || cur.name || cur.constructor?.name || typeof cur;
+      parts.push(cur.message ? `${label}: ${cur.message}` : String(label));
+      cur = cur.cause;
+      depth++;
+    }
+    return parts.length ? parts.join(" <- ") : "none";
+  } catch {
+    return "unavailable";
+  }
+}
+
+// A request body that can safely be transmitted again after a transport
+// failure. Streams/FormData/Blob are one-shot or unverifiable, so they are
+// excluded — retrying those could send an empty or truncated body.
+function isReplayableBody(body) {
+  if (body == null) return true;
+  if (typeof body === "string") return true;
+  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) return true;
+  if (ArrayBuffer.isView(body)) return true;
+  if (body instanceof ArrayBuffer) return true;
+  return false;
+}
+
+// Distinguishes a caller-initiated abort from a genuine transport failure.
+// Aborts must propagate: the client is gone, so retrying is pointless.
+// Walks the cause chain because proxyAwareFetchCore re-wraps errors when
+// strictProxy is on, which would otherwise mask the original AbortError.
+function isClientAbort(options, err) {
+  if (options?.signal?.aborted) return true;
+  let cur = err;
+  let depth = 0;
+  while (cur && depth < 4) {
+    if (cur.name === "AbortError") return true;
+    cur = cur.cause;
+    depth++;
+  }
+  return false;
+}
+
+// OpenCode egress: reach upstream through the VPN proxy, retrying transient
+// transport failures within a bounded budget. Deliberately does NOT fall back
+// to a direct connection — a leak would expose the datacenter IP to opencode.ai.
+async function fetchThroughVpn(url, options, vpnOptions) {
+  const totalAttempts = OPENCODE_PROXY_TRANSPORT_RETRIES + 1;
+  let lastError = null;
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, OPENCODE_PROXY_TRANSPORT_BACKOFF_MS * attempt));
+    }
+    try {
+      return await proxyAwareFetchCore(url, options, vpnOptions);
+    } catch (err) {
+      if (isClientAbort(options, err)) throw err;
+      if (!isReplayableBody(options?.body)) throw err;
+      lastError = err;
+      console.warn(
+        `[ProxyFetch] OpenCode proxy transport failed (attempt ${attempt + 1}/${totalAttempts}): ` +
+        `${err.message} | cause=${describeFetchCause(err)}`
+      );
+    }
+  }
+  throw lastError;
+}
+
 // OpenCode free-tier rotation: on 429 FreeUsageLimitError/Rate limit, rotate
 // the ProtonVPN container's exit IP and retry up to 3x via the proxy stack.
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
@@ -301,9 +379,12 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       ...(proxyOptions || {}),
       connectionProxyEnabled: true,
       connectionProxyUrl: "http://protonvpn-proxy:8888",
+      // Forces proxyAwareFetchCore to throw instead of retrying direct.
+      strictProxy: OPENCODE_PROXY_STRICT,
     };
+    let resp = null;
     for (let rotAttempt = 0; rotAttempt < 3; rotAttempt++) {
-      const resp = await proxyAwareFetchCore(url, options, vpnOptions);
+      resp = await fetchThroughVpn(url, options, vpnOptions);
       if (resp.status !== 429) {
         return resp;
       }
@@ -323,6 +404,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
         return resp;
       }
     }
+    // Rotation budget spent: return the last upstream response rather than
+    // re-issuing the call outside the forced VPN path.
+    if (resp) return resp;
   }
   return proxyAwareFetchCore(url, options, proxyOptions);
 }
@@ -358,9 +442,11 @@ async function proxyAwareFetchCore(url, options = {}, proxyOptions = null) {
         return await originalFetch(url, { ...options, dispatcher });
       } catch (proxyError) {
         if (proxyOptions?.strictProxy === true) {
-          throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+          // Preserve the original error as `cause` so callers can still tell an
+          // abort apart from a transport failure after the re-wrap.
+          throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
         }
-        console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
+        console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message} | cause=${describeFetchCause(proxyError)}`);
       }
     }
     // No proxy — manually resolve real IP to bypass DNS spoof
@@ -380,9 +466,11 @@ async function proxyAwareFetchCore(url, options = {}, proxyOptions = null) {
     } catch (proxyError) {
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+        // Preserve the original error as `cause` so callers can still tell an
+        // abort apart from a transport failure after the re-wrap.
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
       }
-      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
+      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message} | cause=${describeFetchCause(proxyError)}`);
       return originalFetch(url, options);
     }
   }
