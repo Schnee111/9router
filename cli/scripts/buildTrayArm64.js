@@ -62,6 +62,7 @@ console.log(`HEAD: ${head}`);
 run("go", ["mod", "download"], { cwd: srcDir });
 
 console.log("\nBuilding darwin/arm64...");
+fs.mkdirSync(outDir, { recursive: true });
 // -trimpath strips the local build directory from the binary, so two builds
 // from the same commit + Go version hash identically regardless of where they
 // ran. Without it the pinned sha256 could never be regenerated.
