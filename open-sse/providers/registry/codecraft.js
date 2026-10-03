@@ -2,7 +2,7 @@ export default {
   id: "openai-compatible-chat-codecraft",
   priority: 25,
   alias: "codecraft",
-  aliases: ["cc"],
+  aliases: [],
   uiAlias: "CodeCraft",
   display: {
     name: "CodeCraft API",
