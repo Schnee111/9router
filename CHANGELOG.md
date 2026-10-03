@@ -1,3 +1,11 @@
+# v0.5.96 (2026-10-03)
+
+## Features & Upstream Sync
+- **Upstream v0.5.95 Sync**: merged all upstream changes from decolua/9router (79 commits) including Grok CLI 1.0.44 fix, Claude Sonnet 5.5, GPT-6.1 Sol, Meta Muse, TinyFish, and Z.ai OAuth.
+- **Custom Providers**: preserved CodeCraft, Sekai, and InferX providers in registry.
+- **Alias Hygiene**: cleared conflicting `cc` alias from CodeCraft in favor of Claude Code.
+- **OpenCode Egress**: preserved fail-closed egress and WireGuard VPN auto-rotation on 429.
+
 # v0.5.95 (2026-10-01)
 
 ## Features
