@@ -25,18 +25,17 @@ export const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 export const OPENCODE_REQUEST_RE = /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-function hasValidOpencodeVersion(ua) {
-  const str = String(ua || "");
-  if (/opencode\/(?:latest|stable|preview|dev|\d+)/i.test(str)) {
-    const m = str.match(/(\d+)\.(\d+)(?:\.(\d+))?/);
-    if (!m) return false;
-    const major = parseInt(m[1], 10);
-    const minor = parseInt(m[2], 10);
-    return major >= 2 || (major === 1 && minor >= 17);
-  }
-  return false;
+export function hasValidOpencodeVersion(ua) {
+  if (!ua || typeof ua !== "string") return false;
+  // Strictly match OpenCode version tag (e.g. "opencode/latest/2.0.29/cli" or "opencode/1.18.31").
+  // Avoid false-positive semver matches from general browser tokens like "Mozilla/5.0".
+  const m = ua.match(/\bopencode\/(?:(?:latest|stable|preview|dev|beta|[a-zA-Z0-9._-]+)\/)?(\d+)\.(\d+)(?:\.(\d+))?/i);
+  if (!m) return false;
+  const major = parseInt(m[1], 10);
+  const minor = parseInt(m[2], 10);
+  return major >= 2 || (major === 1 && minor >= 17);
 }
-// Models served by /zen/v1/responses; every other model stays on /chat/completions.
+// Models served by /inference/v1/responses; every other model stays on /chat/completions.
 const RESPONSES_MODELS = new Set([
   "muse-spark-1.2-contributor-free",
   "muse-spark-1.3-contributor-free",
@@ -88,18 +87,22 @@ const MAX_TRANSLATED_SESSIONS = 1000;
 const translatedSessionCleanup = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of translatedOpencodeSessions) {
-    if (now - entry.lastUsed > MEMORY_CONFIG.sessionTtlMs) {
+    if (now - entry.lastUsed > (MEMORY_CONFIG?.sessionTtlMs || 1800000)) {
       translatedOpencodeSessions.delete(key);
     }
   }
-}, MEMORY_CONFIG.sessionCleanupIntervalMs);
+}, MEMORY_CONFIG?.sessionCleanupIntervalMs || 300000);
 if (translatedSessionCleanup.unref) translatedSessionCleanup.unref();
 
-export function translateSessionId(sessionId, clientTool = "") {
+export function translateSessionId(sessionId, clientTool = "", connectionId = "") {
   if (typeof sessionId === "string" && OPENCODE_SESSION_RE.test(sessionId.trim())) {
     return sessionId.trim();
   }
-  const key = `opencode:ses:${clientTool || "generic"}:${sessionId || ""}`;
+  if (!sessionId || typeof sessionId !== "string" || !sessionId.trim()) {
+    return generateSessionId();
+  }
+  const normalized = sessionId.trim();
+  const key = `opencode:ses:${connectionId || "default"}:${clientTool || "generic"}:${normalized}`;
   const existing = translatedOpencodeSessions.get(key);
   if (existing) {
     existing.lastUsed = Date.now();
@@ -479,7 +482,7 @@ export class OpenCodeExecutor extends BaseExecutor {
     return `${base}/inference/v1/chat/completions`;
   }
 
-  buildHeaders(credentials, stream = true, url = "") {
+  buildHeaders(credentials, stream = true, url = "", model = "") {
     const raw = credentials?.rawHeaders || {};
     const lower = {};
     for (const [k, v] of Object.entries(raw)) lower[k.toLowerCase()] = v;
@@ -487,7 +490,7 @@ export class OpenCodeExecutor extends BaseExecutor {
     const downstreamUa = lower["user-agent"] || "";
     const isOpencodeDownstream = hasValidOpencodeVersion(downstreamUa);
 
-    const session = credentials?.[SESSION_FIELD] || this.prepareRequestCredentials({ credentials })[SESSION_FIELD];
+    const session = credentials?.[SESSION_FIELD] || this.prepareRequestCredentials({ credentials })?.[SESSION_FIELD] || generateSessionId();
     const auth = credentials?.apiKey ? `Bearer ${credentials.apiKey}` : "Bearer public";
 
     const headers = {
@@ -502,10 +505,20 @@ export class OpenCodeExecutor extends BaseExecutor {
       "x-opencode-project": lower["x-opencode-project"] || "global",
       "Accept": stream ? "text/event-stream" : "*/*",
     };
-    if (lower["x-opencode-request"]) {
-      headers["x-opencode-request"] = lower["x-opencode-request"];
+    const downstreamReq = normalizeRequestId(lower["x-opencode-request"]);
+    if (downstreamReq) {
+      headers["x-opencode-request"] = downstreamReq;
     }
-    if (url.endsWith("/messages")) headers["anthropic-version"] = ANTHROPIC_API_VERSION;
+    if ((url && url.endsWith("/messages")) || isMessagesModel(model)) {
+      headers["anthropic-version"] = ANTHROPIC_API_VERSION;
+    }
     return headers;
   }
+
+  execute(args) {
+    return super.execute({ ...args, credentials: this.prepareRequestCredentials(args) });
+  }
 }
+
+// Backward compatibility alias for tests
+export { translateSessionId as resolveOpencodeSessionId };

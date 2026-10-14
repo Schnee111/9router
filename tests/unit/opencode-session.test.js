@@ -99,6 +99,24 @@ describe("OpenCode Free Session ID Format", () => {
     const repeated = translateSessionId(raw, "claude");
     expect(repeated).toBe(translated);
   });
+
+  it("does not collide on empty or missing session IDs", () => {
+    const first = translateSessionId("", "claude");
+    const second = translateSessionId("", "claude");
+    expect(first).toMatch(OPENCODE_SESSION_RE);
+    expect(second).toMatch(OPENCODE_SESSION_RE);
+    expect(first).not.toBe(second);
+  });
+
+  it("translates arbitrary session IDs stably and isolates tools", () => {
+    const idA1 = translateSessionId("conv-1", "claude");
+    const idA2 = translateSessionId("conv-1", "claude");
+    const idB = translateSessionId("conv-2", "claude");
+    const idTool = translateSessionId("conv-1", "codex");
+    expect(idA1).toBe(idA2);
+    expect(idA1).not.toBe(idB);
+    expect(idA1).not.toBe(idTool);
+  });
 });
 
 describe("OpenCode Free Executor Session Resolution", () => {
@@ -217,6 +235,23 @@ describe("OpenCode Free User-Agent Validation", () => {
 
     const headersFuture = executor.buildHeaders({ rawHeaders: { "user-agent": "opencode/1.19.0" } });
     expect(headersFuture["User-Agent"]).toBe("opencode/1.19.0");
+
+    const headersV2 = executor.buildHeaders({ rawHeaders: { "user-agent": "opencode/latest/2.0.29/cli" } });
+    expect(headersV2["User-Agent"]).toBe("opencode/latest/2.0.29/cli");
+  });
+
+  it("rejects browser strings with incidental digits from spoofing version check", () => {
+    const executor = getExecutor("opencode");
+    const headers = executor.buildHeaders({
+      rawHeaders: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) opencode/invalid" },
+    });
+    expect(headers["User-Agent"]).toBe("opencode/latest/2.0.29/cli");
+  });
+
+  it("attaches anthropic-version for union-alpha model even when url is omitted", () => {
+    const executor = getExecutor("opencode");
+    const headers = executor.buildHeaders({}, true, "", "union-alpha");
+    expect(headers["anthropic-version"]).toBeDefined();
   });
 });
 

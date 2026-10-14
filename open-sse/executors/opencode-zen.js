@@ -8,7 +8,6 @@ import {
   coerceResponsesArguments,
   coerceResponsesOutput,
 } from "../translator/formats/responsesApi.js";
-import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 
 const SESSION_HEADER = "x-opencode-session";
 const SESSION_FIELD = "_opencodeZenSession";
@@ -24,80 +23,12 @@ import {
   OPENCODE_CANONICAL_TOOL_DEFINITIONS,
 } from "../utils/opencodeFingerprint.js";
 
-function hasValidOpencodeVersion(ua) {
-  const str = String(ua || "");
-  if (/opencode\/(?:latest|stable|preview|dev|\d+)/i.test(str)) {
-    const m = str.match(/(\d+)\.(\d+)(?:\.(\d+))?/);
-    if (!m) return false;
-    const major = parseInt(m[1], 10);
-    const minor = parseInt(m[2], 10);
-    return major >= 2 || (major === 1 && minor >= 17);
-  }
-  return false;
-}
-
-function unstableRandom() {
-  const bytes = crypto.randomBytes(14);
-  let randomPart = "";
-  for (let i = 0; i < 14; i++) {
-    randomPart += BASE62_CHARS[bytes[i] % 62];
-  }
-  return randomPart;
-}
-
-export function generateSessionId(timestamp = Date.now()) {
-  const current = BigInt(timestamp) * 0x1000n + 1n;
-  const value = ~current;
-  const time = Array.from({ length: 6 }, (_, index) =>
-    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
-      .toString(16)
-      .padStart(2, "0")
-  ).join("");
-  return `ses_${time}${unstableRandom()}`;
-}
-
-export function generateRequestId(timestamp = Date.now()) {
-  const current = BigInt(timestamp) * 0x1000n + 1n;
-  const value = current;
-  const time = Array.from({ length: 6 }, (_, index) =>
-    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
-      .toString(16)
-      .padStart(2, "0")
-  ).join("");
-  return `msg_${time}${unstableRandom()}`;
-}
-
-const translatedZenSessions = new Map();
-const MAX_TRANSLATED_SESSIONS = 1000;
-const translatedZenSessionCleanup = setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of translatedZenSessions) {
-    if (now - entry.lastUsed > (MEMORY_CONFIG?.sessionTtlMs || 1800000)) {
-      translatedZenSessions.delete(key);
-    }
-  }
-}, MEMORY_CONFIG?.sessionCleanupIntervalMs || 300000);
-if (translatedZenSessionCleanup.unref) translatedZenSessionCleanup.unref();
-
-export function translateSessionId(sessionId, clientTool = "") {
-  if (typeof sessionId === "string" && OPENCODE_SESSION_RE.test(sessionId.trim())) {
-    return sessionId.trim();
-  }
-  const key = `opencode-zen:ses:${clientTool || "generic"}:${sessionId || ""}`;
-  const existing = translatedZenSessions.get(key);
-  if (existing) {
-    existing.lastUsed = Date.now();
-    translatedZenSessions.delete(key);
-    translatedZenSessions.set(key, existing);
-    return existing.sessionId;
-  }
-  const id = generateSessionId();
-  if (translatedZenSessions.size >= MAX_TRANSLATED_SESSIONS) {
-    translatedZenSessions.delete(translatedZenSessions.keys().next().value);
-  }
-  translatedZenSessions.set(key, { sessionId: id, lastUsed: Date.now() });
-  return id;
-}
+import {
+  generateSessionId,
+  generateRequestId,
+  translateSessionId,
+  hasValidOpencodeVersion,
+} from "./opencode.js";
 
 function toolNameOf(tool) {
   if (!tool || typeof tool !== "object" || Array.isArray(tool)) return "";
@@ -288,7 +219,7 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
     const lower = {};
     for (const [k, v] of Object.entries(raw)) lower[k.toLowerCase()] = v;
     const downstreamUa = lower["user-agent"] || "";
-    // Free-tier gate: spoof the official client UA.
+    headers["Authorization"] = credentials?.apiKey ? `Bearer ${credentials.apiKey}` : "Bearer public";
     headers["User-Agent"] = hasValidOpencodeVersion(downstreamUa) ? downstreamUa : OPENCODE_UA;
     headers["x-opencode-client"] = lower["x-opencode-client"] || "desktop";
     headers["x-opencode-project"] = lower["x-opencode-project"] || "global";
@@ -302,7 +233,7 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
     }
 
     const fallback = this.prepareRequestCredentials({ credentials });
-    const ses = fallback[SESSION_FIELD];
+    const ses = fallback?.[SESSION_FIELD] || generateSessionId();
     headers[SESSION_HEADER] = ses;
     headers["x-opencode-session-id"] = ses;
     headers["x-session-affinity"] = ses;
@@ -312,6 +243,7 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
 
   transformRequest(model, body, stream, credentials) {
     const out = super.transformRequest(model, body);
+    if (out && typeof out === "object" && model && !out.model) out.model = model;
     // Free-tier gate: upstream 403s stream:false even when everything else is valid.
     if (out && typeof out === "object") out.stream = true;
     if (!isResponsesModel(model || body?.model)) {

@@ -35,12 +35,12 @@ export const OPENCODE_CANONICAL_TOOL_DEFINITIONS = {
 };
 const renamedToolNames = new WeakMap();
 
-const KNOWN_FINGERPRINT_MEMBERS = ["read", "shell", "bash", "glob", "grep"];
-
 /** Canonical lowercase name when `name` is a fingerprint member; "" otherwise. */
 export function fingerprintToolKey(name) {
   const lower = String(name ?? "").trim().toLowerCase();
-  return KNOWN_FINGERPRINT_MEMBERS.includes(lower) ? lower : "";
+  if (lower === "bash" || lower === "shell") return "shell";
+  if (lower === "read") return "read";
+  return "";
 }
 
 /** Read a tool name from either flat ({name}) or chat ({function:{name}}) shape. */
@@ -86,12 +86,26 @@ export function concealFingerprintToolNames(tools) {
     if (seenQuartet.has(key)) continue;
     seenQuartet.add(key);
 
+    const def = OPENCODE_CANONICAL_TOOL_DEFINITIONS[key];
     if (current !== key) {
       map.set(key, current);
       const fn = tool.function && typeof tool.function === "object" && !Array.isArray(tool.function)
         ? tool.function
         : null;
-      out.push(fn ? { ...tool, function: { ...fn, name: key } } : { ...tool, name: key });
+      out.push(fn ? {
+        ...tool,
+        function: {
+          ...fn,
+          name: key,
+          description: def?.description || fn.description,
+          parameters: def?.parameters || fn.parameters,
+        },
+      } : {
+        ...tool,
+        name: key,
+        description: def?.description || tool.description,
+        parameters: def?.parameters || tool.parameters,
+      });
     } else {
       out.push(tool);
     }
