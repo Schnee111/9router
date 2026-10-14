@@ -97,14 +97,14 @@ export function concealFingerprintToolNames(tools) {
         function: {
           ...fn,
           name: key,
-          description: def?.description || fn.description,
-          parameters: def?.parameters || fn.parameters,
+          description: fn.description || def?.description,
+          parameters: fn.parameters || def?.parameters,
         },
       } : {
         ...tool,
         name: key,
-        description: def?.description || tool.description,
-        parameters: def?.parameters || tool.parameters,
+        description: tool.description || def?.description,
+        parameters: tool.parameters || def?.parameters,
       });
     } else {
       out.push(tool);
