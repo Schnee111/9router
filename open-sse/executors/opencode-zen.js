@@ -8,91 +8,27 @@ import {
   coerceResponsesArguments,
   coerceResponsesOutput,
 } from "../translator/formats/responsesApi.js";
-import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 
 const SESSION_HEADER = "x-opencode-session";
 const SESSION_FIELD = "_opencodeZenSession";
 const MAX_SESSION_LENGTH = 256;
 
-const RESPONSES_BASE_URL = "https://opencode.ai/zen/v1/responses";
+const RESPONSES_BASE_URL = "https://opencode.ai/inference/v1/responses";
 const MAX_TOOL_NAME_LEN = 128;
-const OPENCODE_UA = "opencode/1.18.31";
+const OPENCODE_UA = "opencode/latest/2.0.29/cli";
 export const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-// Free-tier fingerprint (mirrors opencode executor, PR #4132): upstream 403s
-// requests without the file-search quartet and without stream:true.
-const OPENCODE_FINGERPRINT_TOOLS = ["bash", "glob", "grep", "read"];
+import {
+  OPENCODE_FINGERPRINT_TOOLS,
+  OPENCODE_CANONICAL_TOOL_DEFINITIONS,
+} from "../utils/opencodeFingerprint.js";
 
-function hasValidOpencodeVersion(ua) {
-  const m = String(ua || "").match(/opencode\/(\d+)\.(\d+)(?:\.(\d+))?/i);
-  if (!m) return false;
-  const major = parseInt(m[1], 10);
-  const minor = parseInt(m[2], 10);
-  return major > 1 || (major === 1 && minor >= 17);
-}
-
-function unstableRandom() {
-  const bytes = crypto.randomBytes(14);
-  let randomPart = "";
-  for (let i = 0; i < 14; i++) {
-    randomPart += BASE62_CHARS[bytes[i] % 62];
-  }
-  return randomPart;
-}
-
-export function generateSessionId(timestamp = Date.now()) {
-  const current = BigInt(timestamp) * 0x1000n + 1n;
-  const value = ~current;
-  const time = Array.from({ length: 6 }, (_, index) =>
-    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
-      .toString(16)
-      .padStart(2, "0")
-  ).join("");
-  return `ses_${time}${unstableRandom()}`;
-}
-
-export function generateRequestId(timestamp = Date.now()) {
-  const current = BigInt(timestamp) * 0x1000n + 1n;
-  const value = current;
-  const time = Array.from({ length: 6 }, (_, index) =>
-    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
-      .toString(16)
-      .padStart(2, "0")
-  ).join("");
-  return `msg_${time}${unstableRandom()}`;
-}
-
-const translatedZenSessions = new Map();
-const MAX_TRANSLATED_SESSIONS = 1000;
-const translatedZenSessionCleanup = setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of translatedZenSessions) {
-    if (now - entry.lastUsed > (MEMORY_CONFIG?.sessionTtlMs || 1800000)) {
-      translatedZenSessions.delete(key);
-    }
-  }
-}, MEMORY_CONFIG?.sessionCleanupIntervalMs || 300000);
-if (translatedZenSessionCleanup.unref) translatedZenSessionCleanup.unref();
-
-export function translateSessionId(sessionId, clientTool = "") {
-  if (typeof sessionId === "string" && OPENCODE_SESSION_RE.test(sessionId.trim())) {
-    return sessionId.trim();
-  }
-  const key = `opencode-zen:ses:${clientTool || "generic"}:${sessionId || ""}`;
-  const existing = translatedZenSessions.get(key);
-  if (existing) {
-    existing.lastUsed = Date.now();
-    translatedZenSessions.delete(key);
-    translatedZenSessions.set(key, existing);
-    return existing.sessionId;
-  }
-  const id = generateSessionId();
-  if (translatedZenSessions.size >= MAX_TRANSLATED_SESSIONS) {
-    translatedZenSessions.delete(translatedZenSessions.keys().next().value);
-  }
-  translatedZenSessions.set(key, { sessionId: id, lastUsed: Date.now() });
-  return id;
-}
+import {
+  generateSessionId,
+  generateRequestId,
+  translateSessionId,
+  hasValidOpencodeVersion,
+} from "./opencode.js";
 
 function toolNameOf(tool) {
   if (!tool || typeof tool !== "object" || Array.isArray(tool)) return "";
@@ -114,12 +50,13 @@ function ensureChatFingerprintTools(body) {
   }
   for (const name of OPENCODE_FINGERPRINT_TOOLS) {
     if (present.has(name)) continue;
+    const def = OPENCODE_CANONICAL_TOOL_DEFINITIONS[name];
     body.tools.push({
       type: "function",
       function: {
         name,
-        description: `OpenCode built-in ${name} tool`,
-        parameters: { type: "object", properties: {} },
+        description: def.description,
+        parameters: def.parameters,
       },
     });
     present.add(name);
@@ -139,11 +76,12 @@ function ensureResponsesFingerprintTools(body) {
   }
   for (const name of OPENCODE_FINGERPRINT_TOOLS) {
     if (present.has(name)) continue;
+    const def = OPENCODE_CANONICAL_TOOL_DEFINITIONS[name];
     body.tools.push({
       type: "function",
       name,
-      description: `OpenCode built-in ${name} tool`,
-      parameters: { type: "object", properties: {} },
+      description: def.description,
+      parameters: def.parameters,
     });
     present.add(name);
   }
@@ -281,22 +219,31 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
     const lower = {};
     for (const [k, v] of Object.entries(raw)) lower[k.toLowerCase()] = v;
     const downstreamUa = lower["user-agent"] || "";
-    // Free-tier gate: spoof the official client UA.
+    headers["Authorization"] = credentials?.apiKey ? `Bearer ${credentials.apiKey}` : "Bearer public";
     headers["User-Agent"] = hasValidOpencodeVersion(downstreamUa) ? downstreamUa : OPENCODE_UA;
     headers["x-opencode-client"] = lower["x-opencode-client"] || "desktop";
+    headers["x-opencode-project"] = lower["x-opencode-project"] || "global";
     const prepared = credentials?.[SESSION_FIELD];
     if (prepared) {
       headers[SESSION_HEADER] = prepared;
+      headers["x-opencode-session-id"] = prepared;
+      headers["x-session-affinity"] = prepared;
+      headers["x-session-id"] = prepared;
       return headers;
     }
 
     const fallback = this.prepareRequestCredentials({ credentials });
-    headers[SESSION_HEADER] = fallback[SESSION_FIELD];
+    const ses = fallback?.[SESSION_FIELD] || generateSessionId();
+    headers[SESSION_HEADER] = ses;
+    headers["x-opencode-session-id"] = ses;
+    headers["x-session-affinity"] = ses;
+    headers["x-session-id"] = ses;
     return headers;
   }
 
   transformRequest(model, body, stream, credentials) {
     const out = super.transformRequest(model, body);
+    if (out && typeof out === "object" && model && !out.model) out.model = model;
     // Free-tier gate: upstream 403s stream:false even when everything else is valid.
     if (out && typeof out === "object") out.stream = true;
     if (!isResponsesModel(model || body?.model)) {
