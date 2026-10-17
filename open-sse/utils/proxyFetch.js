@@ -407,8 +407,9 @@ async function fetchThroughVpn(url, options, vpnOptions) {
   throw lastError;
 }
 
-// OpenCode free-tier rotation: on 429 FreeUsageLimitError/Rate limit, rotate
-// the ProtonVPN container's exit IP and retry up to 3x via the proxy stack.
+// OpenCode free-tier rotation: on 429 FreeUsageLimitError/Rate limit or 403 FreeTierError
+// (Cloudflare WAF IP reputation flag), rotate the ProtonVPN container's exit IP and
+// retry up to 3x via the proxy stack.
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const targetUrl = typeof url === "string" ? url : url.toString();
   const isOpencode = targetUrl.includes("opencode.ai");
@@ -423,17 +424,36 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     let resp = null;
     for (let rotAttempt = 0; rotAttempt < 3; rotAttempt++) {
       resp = await fetchThroughVpn(url, options, vpnOptions);
-      if (resp.status !== 429) {
+      if (resp.status !== 429 && resp.status !== 403) {
         return resp;
       }
+      let shouldRotate = false;
+      let rotReason = "";
       try {
         const clone = resp.clone();
         const text = await clone.text();
-        if (!text.includes("FreeUsageLimitError") && !text.includes("Rate limit")) return resp;
+        if (resp.status === 429) {
+          if (text.includes("FreeUsageLimitError") || text.includes("Rate limit")) {
+            shouldRotate = true;
+            rotReason = "rate limit";
+          }
+        } else if (resp.status === 403) {
+          if (text.includes("FreeTierError")) {
+            shouldRotate = true;
+            rotReason = "FreeTierError";
+          }
+        }
       } catch {
-        // body unreadable — treat as rate limited and rotate
+        // body unreadable — treat 429 as rate limited and rotate, but leave 403 untouched
+        if (resp.status === 429) {
+          shouldRotate = true;
+          rotReason = "rate limit (unreadable body)";
+        }
       }
-      console.warn(`[ProxyFetch] OpenCode 429 hit (attempt ${rotAttempt + 1}/3), rotating VPN...`);
+      if (!shouldRotate) {
+        return resp;
+      }
+      console.warn(`[ProxyFetch] OpenCode ${resp.status} (${rotReason}) hit (attempt ${rotAttempt + 1}/3), rotating VPN...`);
       try {
         await originalFetch("http://172.19.0.1:28880/rotate");
         await new Promise((res) => setTimeout(res, 1200));
