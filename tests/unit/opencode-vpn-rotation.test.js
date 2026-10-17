@@ -21,6 +21,18 @@ const QUOTA_429 = JSON.stringify({
   error: { message: "FreeUsageLimitError: quota exhausted" },
 });
 
+const FREE_TIER_403 = JSON.stringify({
+  type: "error",
+  error: {
+    type: "FreeTierError",
+    message: "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building.",
+  },
+});
+
+const GENERIC_403 = JSON.stringify({
+  error: { message: "Invalid API key" },
+});
+
 function opencodeCalls(fetchMock) {
   return fetchMock.mock.calls.filter((c) => String(c[0]).includes(OPENCODE_HOST));
 }
@@ -48,7 +60,55 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("OpenCode 429 VPN rotation", () => {
+describe("OpenCode VPN rotation (429 & 403 FreeTierError)", () => {
+  it("rotates the VPN exit IP on a 403 FreeTierError, then succeeds through the proxy", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let opencodeHits = 0;
+    const fetchMock = vi.fn(async (input, init) => {
+      if (String(input).includes(OPENCODE_HOST)) {
+        opencodeHits += 1;
+        if (opencodeHits === 1) {
+          return new Response(FREE_TIER_403, { status: 403 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response("", { status: 200 });
+    });
+
+    const { proxyAwareFetch } = await loadProxyFetch(fetchMock);
+    const resp = await proxyAwareFetch("https://opencode.ai/zen/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+
+    expect(resp.status).toBe(200);
+    expect(opencodeHits).toBe(2);
+    expect(rotateCalls(fetchMock)).toHaveLength(1);
+    expect(directCalls(fetchMock)).toHaveLength(0);
+  });
+
+  it("does not rotate on a 403 that is not FreeTierError", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchMock = vi.fn(async (input) => {
+      if (String(input).includes(OPENCODE_HOST)) {
+        return new Response(GENERIC_403, { status: 403 });
+      }
+      return new Response("", { status: 200 });
+    });
+
+    const { proxyAwareFetch } = await loadProxyFetch(fetchMock);
+    const resp = await proxyAwareFetch("https://opencode.ai/zen/v1/chat/completions", {
+      method: "POST",
+      body: "{}",
+    });
+
+    expect(resp.status).toBe(403);
+    expect(rotateCalls(fetchMock)).toHaveLength(0);
+    expect(opencodeCalls(fetchMock)).toHaveLength(1);
+    expect(directCalls(fetchMock)).toHaveLength(0);
+  });
+
   it("rotates the VPN exit IP on a quota 429, then succeeds through the proxy", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     let opencodeHits = 0;
