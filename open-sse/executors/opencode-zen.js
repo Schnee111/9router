@@ -14,8 +14,10 @@ const SESSION_FIELD = "_opencodeZenSession";
 const MAX_SESSION_LENGTH = 256;
 
 const RESPONSES_BASE_URL = "https://opencode.ai/zen/v1/responses";
+const INFERENCE_RESPONSES_URL = "https://opencode.ai/inference/v1/responses";
+const INFERENCE_CHAT_URL = "https://opencode.ai/inference/v1/chat/completions";
 const MAX_TOOL_NAME_LEN = 128;
-const OPENCODE_UA = "opencode/1.18.31";
+const OPENCODE_UA = "opencode/latest/2.0.26/cli";
 export const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 // Free-tier fingerprint (mirrors opencode executor, PR #4132): upstream 403s
@@ -239,6 +241,10 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
   }
 
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
+    if (isOpencodeFreeTierModel(model)) {
+      if (isResponsesModel(model)) return INFERENCE_RESPONSES_URL;
+      return INFERENCE_CHAT_URL;
+    }
     // Muse Spark lives on /responses even when a stale runtimeTransport leaks in.
     if (isResponsesModel(model)) return RESPONSES_BASE_URL;
     return super.buildUrl(model, stream, urlIndex, credentials);
@@ -288,7 +294,15 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
       // `Bearer public` + session/request ids succeed. Paid models keep the
       // connection key untouched.
       headers["Authorization"] = "Bearer public";
-      headers["x-opencode-request"] = generateRequestId();
+      headers["User-Agent"] = hasValidOpencodeVersion(downstreamUa) ? downstreamUa : OPENCODE_UA;
+      headers["x-opencode-client"] = lower["x-opencode-client"] || "cli";
+      const sess = headers[SESSION_HEADER];
+      if (sess) {
+        headers["x-opencode-session-id"] = sess;
+        headers["x-session-affinity"] = sess;
+        headers["x-session-id"] = sess;
+      }
+      delete headers["x-opencode-request"];
     }
     return headers;
   }
