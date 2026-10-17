@@ -59,13 +59,15 @@ describe("isOpencodeFreeTierModel", () => {
 });
 
 describe("OpenCodeZenExecutor free-tier auth", () => {
-  it("sends Bearer public + session + request ids for free-tier models", () => {
+  it("sends Bearer public + v2 session headers for free-tier models", () => {
     const headers = headersFor("mimo-v2.6-flash-free");
     expect(headers["Authorization"]).toBe("Bearer public");
     expect(headers["x-opencode-session"]).toMatch(OPENCODE_SESSION_RE);
-    expect(headers["x-opencode-request"]).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
-    expect(headers["x-opencode-client"]).toBe("desktop");
-    expect(headers["User-Agent"]).toMatch(/opencode\/\d+\.\d+/i);
+    expect(headers["x-opencode-session-id"]).toMatch(OPENCODE_SESSION_RE);
+    expect(headers["x-session-affinity"]).toMatch(OPENCODE_SESSION_RE);
+    expect(headers["x-opencode-request"]).toBeUndefined();
+    expect(headers["x-opencode-client"]).toBe("cli");
+    expect(headers["User-Agent"]).toMatch(/opencode\/latest\/\d+\.\d+/i);
   });
 
   it("does the same for responses-endpoint free models", () => {
@@ -74,7 +76,8 @@ describe("OpenCodeZenExecutor free-tier auth", () => {
       {},
     );
     expect(headers["Authorization"]).toBe("Bearer public");
-    expect(headers["x-opencode-request"]).toMatch(/^msg_/);
+    expect(headers["x-opencode-session-id"]).toMatch(OPENCODE_SESSION_RE);
+    expect(headers["x-opencode-request"]).toBeUndefined();
   });
 
   it("keeps the connection key for paid models", () => {

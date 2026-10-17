@@ -1,3 +1,10 @@
+# v0.5.105 (2026-10-17)
+
+## Fixes
+- **OpenCode Zen**: align free-tier routing with OpenCode v2 inference endpoints (`/inference/v1/chat/completions` and `/inference/v1/responses`), spoofing v2 CLI headers (`x-opencode-session-id`, `x-session-affinity`) and dropping deprecated `x-opencode-request` to prevent 403/429 cascading latency.
+- **Capabilities**: set `thinkingFormat: "openai"` for `glm-5.3-flash-free` on `opencode`, `opencode-zen`, and general free patterns, avoiding upstream 400 rejection on unknown `thinking` field.
+- **Docker**: include `undici` in standalone runner stage of `Dockerfile.prod` so `proxyFetch` can resolve `ProxyAgent` without runtime module resolution failures.
+
 # v0.5.104 (2026-10-15) + Fork Sync
 
 ## Fork Sync
