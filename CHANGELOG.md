@@ -1,3 +1,8 @@
+# v0.5.109-patch.2 (2026-10-26)
+
+## Fixes
+- **Non-streaming /v1/messages format**: every provider (Antigravity, Kiro, Gemini, ...) now returns an Anthropic `message` body to Claude clients instead of an OpenAI `chat.completion` body. Cherry-pick of decolua/9router#5094 (#23, PR #24).
+
 # v0.5.109-patch.1 (2026-10-23) + Fork Sync
 
 ## Fork Sync & Custom Patches
