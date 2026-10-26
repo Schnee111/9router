@@ -1,3 +1,8 @@
+# v0.5.109-patch.3 (2026-10-26)
+
+## Fixes
+- **Non-streaming SSE error status**: an SSE error chunk on the non-streaming path (e.g. Kiro `encodeSSEError`) now returns its upstream status (400-599) or 502 instead of HTTP 200 with an error body and no usage, so the account loop falls back and Claude clients retry (#27, PR #28). Reported upstream as decolua/9router#5249.
+
 # v0.5.109-patch.2 (2026-10-26)
 
 ## Fixes
