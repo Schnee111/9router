@@ -188,6 +188,7 @@ export const MODEL_CAPABILITIES = {
   // Kimi flagship + coding (platform + Kimi Code ids) — vision/video native
   "kimi-k3":           { vision: true, videoInput: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
   "k3":                { vision: true, videoInput: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
+  "kimi-k3.1-pro":     { vision: true, videoInput: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
   "kimi-for-coding":   { vision: true, videoInput: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 262144, maxOutput: 65536 },
   "kimi-for-coding-highspeed": { vision: true, videoInput: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 262144, maxOutput: 65536 },
   "kimi-k2.7-code":    { vision: true, videoInput: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 262144, maxOutput: 65536 },
@@ -257,11 +258,27 @@ export const PROVIDER_CAPABILITIES = {
     // catalog overlay, so maxOutput must be stated here too).
     "claude-haiku-5-5": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
   },
+  // OpenCode Free (oc) — the free lane's MiMo route is OpenRouter-backed and takes
+  // the plain OpenAI reasoning_effort enum verbatim (live probe on
+  // oc/mimo-v2.6-flash-free: none|minimal|low|medium|high|xhigh|max all 200, any
+  // other value 400 "Invalid option"; "none" really drops thinking — empty
+  // reasoning_content and reasoning_tokens 0). The global *mimo*v2.6* pattern
+  // describes Xiaomi's own API (DeepSeek-shaped `thinking` object, always on),
+  // which this lane ignores: `thinking.type:disabled` still streamed reasoning.
+  // Limits repeat the family pattern deliberately: the synced catalog carries no
+  // `opencode` limit delta for this id, so 1M/131k is what the lane already
+  // published before this override — but the override short-circuits the catalog
+  // overlay, so models.dev's free-lane listing (200000/32000) has to be applied
+  // here if a probe ever pins the lane's real window (a 200k `max_tokens` is
+  // accepted, so the 32k figure is not enforced at request validation).
+  // deepseek-v4.1-flash-free: the backend rejects requests above ~330k prompt
+  // tokens (issue #5097). Cap the published context window at 330000 so clients
+  // (VS Code Copilot etc.) compact correctly instead of hard-failing mid-session.
   "opencode": {
     "mimo-v2.6-flash-free": { vision: true, audioInput: true, videoInput: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: true, contextWindow: 1048576, maxOutput: 131072 },
+    "deepseek-v4.1-flash-free": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 330000, maxOutput: 128000 },
     "glm-5.3-flash": { vision: true, videoInput: true, pdf: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 131072 },
     "glm-5.3-flash-free": { vision: true, videoInput: true, pdf: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 131072 },
-    "deepseek-v4.1-flash-free": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
   },
   "opencode-zen": {
     "glm-5.3-flash": { vision: true, videoInput: true, pdf: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 131072 },
@@ -487,6 +504,9 @@ export const PATTERN_CAPABILITIES = [
   { pattern: "*nanobanana*",    caps: { vision: true, imageOutput: true } },
 
   // ── OpenAI GPT-6.x (vision + thinking + web search) ──────────────
+  // Image variants ("-image" suffix) are image models, not chat models — first
+  // match wins, so they must precede the generic family entry below.
+  { pattern: "*gpt-6*image*",   caps: { imageOutput: true } },
   // 1.05M is the API window for the whole gpt-6 family (astra, luna, sol alike).
   // A gateway that truncates lower records its own number in
   // PROVIDER_CAPABILITIES, which wins over this pattern — Kiro at 272k, Codex
