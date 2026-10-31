@@ -146,6 +146,7 @@ import p146 from "./chatgpt-web.js";
 import p147 from "./veoaifree-web.js";
 import p151 from "./uc-web.js";
 import p152 from "./runcrate.js";
+import p153 from "./nace.js";
 import pCustomCodecraft from "./codecraft.js";
 import pCustomSekai from "./sekai.js";
 import pCustomInferx from "./inferx.js";
@@ -295,6 +296,7 @@ export default [
   p147,
   p151,
   p152,
+  p153,
   pCustomCodecraft,
   pCustomSekai,
   pCustomInferx,
