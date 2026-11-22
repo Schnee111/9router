@@ -31,6 +31,14 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
+# The "Antigravity ACP" provider card is a vendored third-party addition; it is
+# idempotent and only appends a registry entry, an API route and a dashboard
+# card. It must run before the build because the registry is compiled into the
+# client and server bundles. Set WITH_AGY_ACP=0 to build without it.
+ARG WITH_AGY_ACP=1
+RUN if [ "$WITH_AGY_ACP" = "1" ]; then \
+      python3 vendor/agy-acp/9r-patch/apply.py /app; \
+    fi
 RUN npm run build
 
 # https://github.com/decolua/9router/issues/5245

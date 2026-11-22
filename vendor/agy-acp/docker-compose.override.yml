@@ -1,0 +1,50 @@
+# Overlay for the "Antigravity ACP" provider.
+#
+#   docker compose -f docker-compose.yml -f vendor/agy-acp/docker-compose.override.yml up -d
+#
+# Why a sidecar instead of baking the bridge into the 9router image:
+#   * the `agy` binary Google ships is glibc-linked and the 9router runtime is
+#     Alpine/musl, so it cannot exec there;
+#   * the bridge must reach Google with a real `agy` process, which needs the
+#     binary and its ~/.gemini app-data tree from the host.
+#
+# The bridge publishes NO host port. Only 9router reaches it, over the compose
+# network, and only the dashboard proxy route talks to it. Publishing 20130 to
+# 0.0.0.0 would expose account management to the internet whenever
+# AGY_ADMIN_TOKEN is empty.
+
+services:
+  9router:
+    environment:
+      AGY_BRIDGE_URL: http://agy-acp:20130
+      AGY_ADMIN_TOKEN: ${AGY_ADMIN_TOKEN:?AGY_ADMIN_TOKEN must be set}
+    depends_on:
+      agy-acp:
+        condition: service_healthy
+
+  agy-acp:
+    image: ghcr.io/schnee111/agy-acp-bridge:latest
+    container_name: agy-acp
+    restart: always
+    expose:
+      - "20130"
+    environment:
+      AGY_BIN: /usr/local/bin/agy
+      AGY_APPDATA_ROOT: /data/gemini
+      AGY_PROFILES_DIR: /data/profiles
+      AGY_CWD: /data/work
+      AGY_BRIDGE_PORT: "20130"
+      AGY_BRIDGE_BIND: "0.0.0.0"
+      AGY_ADMIN_TOKEN: ${AGY_ADMIN_TOKEN:?AGY_ADMIN_TOKEN must be set}
+      AGY_TURN_TIMEOUT: "300"
+      TZ: "Asia/Jakarta"
+    volumes:
+      # The real Antigravity CLI binary, read-only.
+      - /home/ubuntu/.local/bin/agy:/usr/local/bin/agy:ro
+      # OAuth app-data + per-profile logins + working directory for turns.
+      - agy-acp-data:/data
+      - /usr/share/zoneinfo/Asia/Jakarta:/etc/localtime:ro
+
+volumes:
+  agy-acp-data:
+    name: agy-acp-data
