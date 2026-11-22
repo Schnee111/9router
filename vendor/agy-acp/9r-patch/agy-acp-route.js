@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
  *   POST /api/agy-acp/test            {profile, model}
  *   POST /api/agy-acp/primary         {profile}
  */
-const BRIDGE = process.env.AGY_BRIDGE_URL || "http://127.0.0.1:20130";
+const BRIDGE = process.env.AGY_BRIDGE_URL || "http://agy-acp:20130";
 const TOKEN = process.env.AGY_ADMIN_TOKEN || "CHANGE_ME";
 
 const ROUTES = {

@@ -23,7 +23,10 @@ export default {
   transport: {
     // registry transport baseUrl is used verbatim — no path is appended,
     // so it must be the full chat endpoint, not just the /v1 root.
-    baseUrl: "http://127.0.0.1:20130/v1/chat/completions",
+    // "agy-acp" is the compose service name: 9router reaches the bridge over
+    // the internal compose network. A non-container deployment must point this
+    // at wherever the bridge runs (it publishes no host port by design).
+    baseUrl: "http://agy-acp:20130/v1/chat/completions",
     format: "openai",
   },
   models: [
