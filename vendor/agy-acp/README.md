@@ -72,6 +72,13 @@ docker compose \
 Then, in the dashboard: **Providers -> Antigravity ACP -> Accounts**, start a
 login, open the printed Google URL, paste the code back.
 
+## Non-compose deployments
+
+The registry's default transport points at `http://agy-acp:20130` — the compose
+service name. Running 9router outside compose means setting `AGY_BRIDGE_URL`
+(and building with the patched `agy-acp-route.js` default) to wherever the
+bridge actually listens, or every admin route will 502.
+
 ## Account safety
 
 - Log in **one** account at a time, from the dashboard. The login goes through
