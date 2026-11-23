@@ -28,7 +28,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/agy-acp
-COPY bridge.py hooks/ ./
+COPY bridge.py ./
+COPY 9r-patch/hooks/ ./hooks/
 
 RUN mkdir -p /data/gemini /data/profiles /data/work \
     && chmod 0755 /data
