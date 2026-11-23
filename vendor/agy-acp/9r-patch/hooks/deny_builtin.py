@@ -26,7 +26,12 @@ except Exception:
     payload = {}
 name = ((payload.get("toolCall") or {}).get("name") or "").strip()
 conv = str(payload.get("conversationId") or "")
-conditional = os.path.isfile(os.path.join(MODE_DIR, conv + ".json"))
+# conversationId comes from the hook payload unvalidated; reject anything that
+# is not a plain identifier so it can never traverse out of MODE_DIR.
+import re as _re
+if not _re.fullmatch(r"[A-Za-z0-9_-]{1,128}", conv):
+    conv = ""
+conditional = bool(conv) and os.path.isfile(os.path.join(MODE_DIR, conv + ".json"))
 decision = "deny" if conditional else "allow"
 try:
     with open("/var/log/agy-bridge-hooks.log", "a") as fh:

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, Button, Badge, Input, Modal } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
 
@@ -38,18 +38,22 @@ export default function AcpAccountsCard() {
   const [starting, setStarting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const res = await fetch("/api/agy-acp/profiles", { cache: "no-store" });
       const data = await res.json();
+      if (seq !== loadSeq.current) return; // a newer load superseded this one
       if (!res.ok) throw new Error(data.error || `bridge error ${res.status}`);
       setProfiles(data.profiles || []);
       setPrimary(data.primary || null);
       setBridgeDown(false);
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setBridgeDown(true);
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, []);
 
@@ -131,8 +135,14 @@ export default function AcpAccountsCard() {
         body: JSON.stringify({ profile }),
       });
       const data = await res.json();
-      if (data.ok) notifySuccess(`Primary: ${profile}`);
-      load();
+      if (data.ok) {
+        notifySuccess(`Primary: ${profile}`);
+        load();
+      } else {
+        notifyError(data.error || `Failed to set primary: ${profile}`);
+      }
+    } catch (e) {
+      notifyError(e.message);
     } finally {
       setBusy("");
     }

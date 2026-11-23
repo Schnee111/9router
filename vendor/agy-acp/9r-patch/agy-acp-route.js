@@ -17,7 +17,16 @@ export const dynamic = "force-dynamic";
  *   POST /api/agy-acp/primary         {profile}
  */
 const BRIDGE = process.env.AGY_BRIDGE_URL || "http://agy-acp:20130";
-const TOKEN = process.env.AGY_ADMIN_TOKEN || "CHANGE_ME";
+// Fail fast: a predictable fallback token turns a misconfiguration into an
+// authentication bypass on the bridge's account-management API. The compose
+// file enforces the same with ${AGY_ADMIN_TOKEN:?}.
+const TOKEN = process.env.AGY_ADMIN_TOKEN;
+if (!TOKEN) {
+  throw new Error("AGY_ADMIN_TOKEN is required — refusing to proxy the bridge admin API without it");
+}
+// Keep the fetch well under the dashboard's patience: the accounts card polls
+// every 15s, so a hung bridge must not hold Next.js requests open.
+const BRIDGE_TIMEOUT_MS = 10_000;
 
 const ROUTES = {
   profiles: { method: "GET", path: "/admin/profiles" },
@@ -40,15 +49,30 @@ async function handle(request, params, method) {
     return NextResponse.json({ error: "Unknown bridge route" }, { status: 404 });
   }
 
-  const url = `${BRIDGE}${route.path}?t=${encodeURIComponent(TOKEN)}`;
-  const init = { method, cache: "no-store" };
+  // Token travels in a header, never a query string: query parameters end up
+  // in proxy and access logs; headers do not.
+  let body;
   if (method === "POST") {
-    init.headers = { "Content-Type": "application/json" };
-    init.body = JSON.stringify(await request.json().catch(() => ({})));
+    const raw = await request.text();
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+  }
+  const init = {
+    method,
+    cache: "no-store",
+    headers: { "X-Admin-Token": TOKEN },
+    signal: AbortSignal.timeout(BRIDGE_TIMEOUT_MS),
+  };
+  if (method === "POST") {
+    init.headers = { ...init.headers, "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
   }
 
   try {
-    const res = await fetch(url, init);
+    const res = await fetch(`${BRIDGE}${route.path}`, init);
     const text = await res.text();
     let data;
     try {
@@ -59,8 +83,10 @@ async function handle(request, params, method) {
     return NextResponse.json(data, { status: res.ok ? 200 : res.status });
   } catch (error) {
     return NextResponse.json(
-      { error: `Bridge unreachable: ${error.message}. Is agy-bridge.service running?` },
-      { status: 502 },
+      { error: error.name === "TimeoutError"
+          ? "Bridge timed out after 10s"
+          : `Bridge unreachable: ${error.message}. Is agy-bridge.service running?` },
+      { status: error.name === "TimeoutError" ? 504 : 502 },
     );
   }
 }

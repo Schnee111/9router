@@ -1183,6 +1183,10 @@ class Handler(BaseHTTPRequestHandler):
         tok = os.environ.get("AGY_ADMIN_TOKEN", "")
         if not tok:
             return True
+        # Header first: query strings end up in access logs. The legacy ?t=
+        # query is still accepted for curl-style one-liners.
+        if (self.headers.get("X-Admin-Token") or "") == tok:
+            return True
         return ("t=" + tok) in (self.path or "")
 
     def _deny_admin(self):
