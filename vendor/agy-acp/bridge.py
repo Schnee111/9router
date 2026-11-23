@@ -23,9 +23,12 @@ import json
 import os
 import queue
 import re
+import ipaddress
+import socket
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1021,9 +1024,23 @@ def _image_block(part):
             return None
     if url.startswith(("http://", "https://")):
         try:
+            # SSRF guard: the bridge shares an internal network with 9router and
+            # every other service in the compose project. A caller-supplied image
+            # URL must not become a pass to probe them, nor cloud metadata.
+            host = (urllib.parse.urlparse(url).hostname or "").lower()
+            if not host:
+                return None
+            for info in socket.getaddrinfo(host, None):
+                ip = ipaddress.ip_address(info[4][0])
+                if (ip.is_private or ip.is_loopback or ip.is_link_local
+                        or ip.is_reserved or ip.is_multicast):
+                    log(f"image fetch blocked: {host} resolves to {ip}")
+                    return None
             req = urllib.request.Request(url, headers={"User-Agent": "agy-acp-bridge"})
             with urllib.request.urlopen(req, timeout=30) as r:
-                raw = r.read()
+                # Cap at 20 MiB: an unbounded read would let one large response
+                # pin the bridge container's memory.
+                raw = r.read(20 * 1024 * 1024)
                 mime = r.headers.get("Content-Type", "image/png").split(";")[0]
             return {"type": "image",
                     "data": base64.b64encode(raw).decode(),
