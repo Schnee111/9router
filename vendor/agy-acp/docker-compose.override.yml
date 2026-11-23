@@ -30,7 +30,12 @@ services:
       - "20130"
     environment:
       AGY_BIN: /usr/local/bin/agy
-      AGY_APPDATA_ROOT: /data/gemini
+      # `agy` resolves every --app-data-dir under $HOME/.gemini, regardless of
+      # what the bridge's AGY_APPDATA_ROOT says. Point HOME at the volume and
+      # tell the bridge the same story, or profiles land on the container's
+      # ephemeral /root and vanish on the next recreate.
+      HOME: /data/gemini
+      AGY_APPDATA_ROOT: /data/gemini/.gemini
       AGY_PROFILES_DIR: /data/profiles
       AGY_CWD: /data/work
       AGY_BRIDGE_PORT: "20130"
