@@ -17,12 +17,18 @@ export const dynamic = "force-dynamic";
  *   POST /api/agy-acp/primary         {profile}
  */
 const BRIDGE = process.env.AGY_BRIDGE_URL || "http://agy-acp:20130";
-// Fail fast: a predictable fallback token turns a misconfiguration into an
-// authentication bypass on the bridge's account-management API. The compose
-// file enforces the same with ${AGY_ADMIN_TOKEN:?}.
-const TOKEN = process.env.AGY_ADMIN_TOKEN;
-if (!TOKEN) {
-  throw new Error("AGY_ADMIN_TOKEN is required — refusing to proxy the bridge admin API without it");
+// Fail fast at REQUEST time: a predictable fallback token turns a
+// misconfiguration into an authentication bypass on the bridge's
+// account-management API. The compose file enforces the same with
+// ${AGY_ADMIN_TOKEN:?}. Validated lazily because Next.js collects page data
+// (and imports this module) at build time, where the env is intentionally
+// absent.
+function adminToken() {
+  const token = process.env.AGY_ADMIN_TOKEN;
+  if (!token) {
+    throw new Error("AGY_ADMIN_TOKEN is required — refusing to proxy the bridge admin API without it");
+  }
+  return token;
 }
 // Keep the fetch well under the dashboard's patience: the accounts card polls
 // every 15s, so a hung bridge must not hold Next.js requests open.
@@ -63,7 +69,7 @@ async function handle(request, params, method) {
   const init = {
     method,
     cache: "no-store",
-    headers: { "X-Admin-Token": TOKEN },
+    headers: { "X-Admin-Token": adminToken() },
     signal: AbortSignal.timeout(BRIDGE_TIMEOUT_MS),
   };
   if (method === "POST") {
