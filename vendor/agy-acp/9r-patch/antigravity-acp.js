@@ -33,6 +33,11 @@ export default {
     { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)" },
     { id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)" },
     { id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)" },
+    // Gemini 4 tiers: only on accounts entitled after the Gemini 4 rollout
+    // (verified live against profile karere — completed turns with real
+    // token accounting in the CLI conversation store, 2026-11-24).
+    { id: "gemini-4-neon-high", name: "Gemini 4 Neon (High)" },
+    { id: "gemini-4-hydrogen-high", name: "Gemini 4 Hydrogen (High)" },
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" },
     { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
     { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
