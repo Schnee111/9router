@@ -448,6 +448,15 @@ class AgyWorker:
                         try:
                             self.rpc("session/set_model", {"sessionId": sid, "modelId": model}, 30)
                         except Exception as e:
+                            low = str(e).lower()
+                            if "unknown model" in low or "model not found" in low or \
+                                    "not entitled" in low or "no access" in low:
+                                # deterministic entitlement refusal: serving the
+                                # session default here would silently answer with
+                                # a different model than the caller asked for
+                                raise RuntimeError(
+                                    f"model {model} unavailable on profile "
+                                    f"{self.profile}: {e}") from e
                             log(f"[{self.profile}] set_model {model}: {e}")
                     if hashes is not None:
                         sess_key = (model or "", hashes)
@@ -746,6 +755,14 @@ class ProfilePool:
         first = prefer or home
         if first and first in ordered:
             ordered = [first] + [n for n in ordered if n != first]
+        if model:
+            now = time.time()
+            def _bad(n):
+                b = ((self.tested.get(n) or {}).get("bad_models") or {}).get(model)
+                return bool(b and now - b.get("ts", 0) < self.BAD_MODEL_TTL)
+            kept = [n for n in ordered if not _bad(n)]
+            if kept:  # never strand a request: demoted profiles stay as last resort
+                ordered = kept + [n for n in ordered if _bad(n)]
         ordered = list(dict.fromkeys(ordered))
         if not ordered:
             raise RuntimeError("no usable profile")
@@ -1349,6 +1366,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 POOL.mark(prof, "error", str(e)[:160])
                 return self._json(200, {"ok": False, "detail": str(e)})
+        if self.path.startswith("/admin/mark"):
+            b = self._body()
+            prof = (b.get("profile") or "").strip()
+            status = (b.get("status") or "").strip()
+            if prof not in list_profiles() or status not in ("tos", "verify", "ok", "error"):
+                return self._json(400, {"ok": False, "detail": "unknown profile or status"})
+            POOL.mark(prof, status, b.get("detail") or "")
+            log(f"[{prof}] marked {status} via admin/mark")
+            return self._json(200, {"ok": True, "profile": prof, "status": status})
         if self.path.startswith("/v1/chat/completions"):
             return self._chat()
         return self._json(404, {"error": "not found"})
