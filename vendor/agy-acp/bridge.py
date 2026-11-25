@@ -742,6 +742,7 @@ class ProfilePool:
         first = prefer or home
         if first and first in ordered:
             ordered = [first] + [n for n in ordered if n != first]
+        ordered = list(dict.fromkeys(ordered))
         if not ordered:
             raise RuntimeError("no usable profile")
         return ordered
