@@ -692,16 +692,26 @@ class ProfilePool:
         if profile == "_primary" or not model:
             return
         self.tested.setdefault(profile, {}).setdefault("bad_models", {})
-        self.tested[profile]["bad_models"][model] = (reason or "")[:160]
+        self.tested[profile]["bad_models"][model] = {"reason": (reason or "")[:160],
+                                                     "ts": time.time()}
+        (self.tested[profile].get("models") or {}).pop(model, None)
         self._save()
+
+    BAD_MODEL_TTL = 7 * 24 * 3600
 
     def model_home(self, model):
         """Profile proven to serve `model`, newest proof first."""
         if not model:
             return None
-        proven = [(p, (st.get("models") or {}).get(model))
-                  for p, st in self.tested.items()
-                  if p != "_primary" and isinstance(st, dict)]
+        now = time.time()
+        proven = []
+        for p, st in self.tested.items():
+            if p == "_primary" or not isinstance(st, dict):
+                continue
+            bad = (st.get("bad_models") or {}).get(model)
+            if bad and now - bad.get("ts", 0) < self.BAD_MODEL_TTL:
+                continue
+            proven.append((p, (st.get("models") or {}).get(model)))
         proven = [(p, t) for p, t in proven if t]
         if not proven:
             return None
@@ -729,10 +739,9 @@ class ProfilePool:
         prim = self.primary()
         ordered = ([prim] if prim else []) + [n for n in ok if n != prim] + untested
         home = self.model_home(model) if model else None
-        for first in (prefer, home):
-            if first and first in ordered:
-                ordered = ([first] if first == prefer else [first]) + \
-                          [n for n in ordered if n != first]
+        first = prefer or home
+        if first and first in ordered:
+            ordered = [first] + [n for n in ordered if n != first]
         if not ordered:
             raise RuntimeError("no usable profile")
         return ordered
