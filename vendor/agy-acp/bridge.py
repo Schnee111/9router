@@ -676,7 +676,49 @@ class ProfilePool:
                 return p
         return None
 
-    def order(self, prefer=None):
+    def learn_model(self, profile, model):
+        """Record that `profile` served `model` successfully (entitlement proof)."""
+        if profile == "_primary" or not model:
+            return
+        self.tested.setdefault(profile, {}).setdefault("models", {})
+        self.tested[profile]["models"][model] = time.time()
+        self.tested[profile]["models"] = {
+            k: v for k, v in sorted(self.tested[profile]["models"].items(),
+                                    key=lambda kv: -kv[1])[:50]}
+        self._save()
+
+    def learn_bad_model(self, profile, model, reason=""):
+        """Record that `profile` cannot serve `model` so later turns skip it."""
+        if profile == "_primary" or not model:
+            return
+        self.tested.setdefault(profile, {}).setdefault("bad_models", {})
+        self.tested[profile]["bad_models"][model] = {"reason": (reason or "")[:160],
+                                                     "ts": time.time()}
+        (self.tested[profile].get("models") or {}).pop(model, None)
+        self._save()
+
+    BAD_MODEL_TTL = 7 * 24 * 3600
+
+    def model_home(self, model):
+        """Profile proven to serve `model`, newest proof first."""
+        if not model:
+            return None
+        now = time.time()
+        proven = []
+        for p, st in self.tested.items():
+            if p == "_primary" or not isinstance(st, dict):
+                continue
+            bad = (st.get("bad_models") or {}).get(model)
+            if bad and now - bad.get("ts", 0) < self.BAD_MODEL_TTL:
+                continue
+            proven.append((p, (st.get("models") or {}).get(model)))
+        proven = [(p, t) for p, t in proven if t]
+        if not proven:
+            return None
+        proven.sort(key=lambda pt: -pt[1])
+        return proven[0][0]
+
+    def order(self, prefer=None, model=None):
         """Every usable profile, primary first. Fallbacks only run when the
         primary fails, so the same account is not hammered concurrently but
         also does not sit idle while a healthy one exists."""
@@ -696,9 +738,10 @@ class ProfilePool:
                     and self.tested.get(n, {}).get("status") != "ok" and usable(n)]
         prim = self.primary()
         ordered = ([prim] if prim else []) + [n for n in ok if n != prim] + untested
-        if prefer:
-            ordered = ([prefer] if prefer in ordered else []) + \
-                      [n for n in ordered if n != prefer]
+        home = self.model_home(model) if model else None
+        first = prefer or home
+        if first and first in ordered:
+            ordered = [first] + [n for n in ordered if n != first]
         if not ordered:
             raise RuntimeError("no usable profile")
         return ordered
@@ -731,7 +774,7 @@ def turn_with_fallback(prompt, model=None, prefer=None, timeout=None, state=None
     handing the banner back to the caller as if it were an answer.
     """
     errors = []
-    for name in POOL.order(prefer):
+    for name in POOL.order(prefer, model):
         worker = None
         try:
             ws = [w for w in POOL.ensure(name) if w.alive()]
@@ -746,6 +789,7 @@ def turn_with_fallback(prompt, model=None, prefer=None, timeout=None, state=None
                               segments=segments, suffix=suffix, client_tools=client_tools)
             try:
                 yield from _drain(gen, name)
+                POOL.learn_model(name, model)
                 return
             finally:
                 # closing the generator runs its finally block and releases the
@@ -758,6 +802,10 @@ def turn_with_fallback(prompt, model=None, prefer=None, timeout=None, state=None
                 log(f"[{name}] turn failed, falling back: {msg[:160]}")
                 if "429" in msg or "quota" in low or "rate" in low or "busy" in low:
                     POOL.cooldown(name, 60 if "busy" in low else 300, msg)
+                if model and any(k in low for k in ("not entitled", "no access",
+                        "unsupported model", "unknown model", "model not found",
+                        "does not have access", "invalid model")):
+                    POOL.learn_bad_model(name, model, msg[:160])
             errors.append(f"{name}: {msg[:120]}")
     raise RuntimeError("all profiles failed — " + "; ".join(errors))
 
