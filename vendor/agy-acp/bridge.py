@@ -602,7 +602,11 @@ class AgyWorker:
 
 
 # ---------------------------------------------------------------- pool
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profile-state.json")
+# /data is the persisted volume; a bind-mounted single file cannot host the
+# atomic tmp+rename save (rename over a bind mount fails with EBUSY).
+STATE_FILE = os.environ.get("AGY_STATE_FILE",
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "profile-state.json"))
 
 
 class ProfilePool:

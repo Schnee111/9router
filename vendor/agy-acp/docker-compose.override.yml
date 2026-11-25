@@ -38,6 +38,7 @@ services:
       AGY_APPDATA_ROOT: /data/gemini/.gemini
       AGY_PROFILES_DIR: /data/profiles
       AGY_CWD: /data/work
+      AGY_STATE_FILE: /data/profile-state.json
       AGY_BRIDGE_PORT: "20130"
       AGY_BRIDGE_BIND: "0.0.0.0"
       AGY_ADMIN_TOKEN: ${AGY_ADMIN_TOKEN:?AGY_ADMIN_TOKEN must be set}
@@ -48,6 +49,8 @@ services:
       - /home/ubuntu/.local/bin/agy:/usr/local/bin/agy:ro
       # OAuth app-data + per-profile logins + working directory for turns.
       - agy-acp-data:/data
+      # learned profile state (entitlements, primary, marks) persists in
+      # /data via AGY_STATE_FILE - same volume as the OAuth profiles
       - /usr/share/zoneinfo/Asia/Jakarta:/etc/localtime:ro
 
 volumes:
