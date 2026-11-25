@@ -752,6 +752,13 @@ class ProfilePool:
         prim = self.primary()
         ordered = ([prim] if prim else []) + [n for n in ok if n != prim] + untested
         home = self.model_home(model) if model else None
+        if home and model and prim:
+            # only let a learned home jump the queue when the primary genuinely
+            # cannot serve this model - otherwise the primary keeps carrying
+            # traffic and a healthy account is not pulled into rotation
+            b = ((self.tested.get(prim) or {}).get("bad_models") or {}).get(model)
+            if not (b and now - b.get("ts", 0) < self.BAD_MODEL_TTL):
+                home = None
         first = prefer or home
         if first and first in ordered:
             ordered = [first] + [n for n in ordered if n != first]
