@@ -252,6 +252,30 @@ class AgyWorker:
                 return key, len(h)
         return None, 0
 
+    def _explain_miss(self, hashes, model):
+        """Why a turn could not extend a live session.
+
+        Session reuse requires the stored history hashes to be a strict prefix of
+        the incoming ones. A client that compacts, reorders, or rewrites earlier
+        messages never matches, so every turn pays a full replay. Log position and
+        size only — never message content, which can carry credentials.
+        """
+        best = None
+        for e in self.sessions.values():
+            if e["model"] != model:
+                continue
+            h = e["hashes"]
+            if best is None or len(h) > len(best):
+                best = h
+        if best is None:
+            return "no live session for this model"
+        i = 0
+        while i < min(len(best), len(hashes)) and best[i] == hashes[i]:
+            i += 1
+        if i == len(best):
+            return f"stored history not a strict prefix ({len(best)} stored vs {len(hashes)} incoming messages)"
+        return f"diverged at message {i} ({len(best)} stored vs {len(hashes)} incoming)"
+
     def _drop_session(self, key, reason=""):
         e = self.sessions.pop(key, None)
         if not e:
@@ -435,6 +459,8 @@ class AgyWorker:
                     else:
                         prompt_text, images = flatten(segments)
                         self.stats["miss"] += 1
+                        log(f"[{self.profile}] session miss: "
+                            f"{self._explain_miss(hashes, model or '')}")
                 if suffix:
                     prompt_text += suffix
                 if sid is None:
@@ -598,6 +624,11 @@ class AgyWorker:
                                 log(f"[{self.profile}] EMPTY turn, updates={seen}")
                                 if thoughts:
                                     yield "".join(thoughts)
+                        turn_usage = (msg.get("result") or {}).get("usage")
+                        if isinstance(turn_usage, dict):
+                            # real token accounting for this turn, including the
+                            # cachedReadTokens count that reveals prompt caching
+                            yield {"__usage__": turn_usage}
                         yield {"__done__": True}
                         return
             finally:
@@ -857,6 +888,30 @@ def quota_reset_seconds(text):
     return min(total, MAX_QUOTA_COOLDOWN)
 
 
+def openai_usage(upstream, prompt_text, text):
+    """Translate agy's per-turn `usage` block into OpenAI's usage shape.
+
+    `agy acp` returns real token accounting on the session/prompt result:
+    inputTokens / outputTokens / thoughtTokens / cachedReadTokens /
+    cachedWriteTokens. The bridge used to publish a chars/4 guess instead, which
+    hid the only evidence a caller can get about Gemini's implicit prompt cache.
+    Keep the guess only as a fallback for turns that carry no usage block.
+    """
+    if isinstance(upstream, dict) and upstream.get("inputTokens") is not None:
+        out = int(upstream.get("outputTokens") or 0) + int(upstream.get("thoughtTokens") or 0)
+        return {
+            "prompt_tokens": int(upstream.get("inputTokens") or 0),
+            "completion_tokens": out,
+            "total_tokens": int(upstream.get("totalTokens") or 0),
+            "prompt_tokens_details": {
+                "cached_tokens": int(upstream.get("cachedReadTokens") or 0),
+            },
+        }
+    return {"prompt_tokens": len(prompt_text) // 4,
+            "completion_tokens": len(text) // 4,
+            "total_tokens": (len(prompt_text) + len(text)) // 4}
+
+
 def turn_with_fallback(prompt, model=None, prefer=None, timeout=None, state=None, images=None,
                        segments=None, suffix="", client_tools=False):
     """Yield text pieces for one turn, walking the profile list as a fallback
@@ -915,6 +970,11 @@ def _drain(gen, name):
         if isinstance(piece, dict) and "__tools__" in piece:
             yield piece
             break
+        if isinstance(piece, dict) and "__usage__" in piece:
+            # token accounting for the finished turn: hand it through so the
+            # caller can report real prompt/completion/cached counts
+            yield piece
+            continue
         if not isinstance(piece, str):
             break
         if settled:
@@ -1496,12 +1556,14 @@ class Handler(BaseHTTPRequestHandler):
                                      images=images, segments=messages, suffix=tools_text,
                                      client_tools=bool(tools))
             if not stream:
-                parts, tcalls = [], []
+                parts, tcalls, u_raw = [], [], None
                 for piece in gen:
                     if isinstance(piece, str):
                         parts.append(piece)
                     elif isinstance(piece, dict) and "__tools__" in piece:
                         tcalls = piece["__tools__"]
+                    elif isinstance(piece, dict) and "__usage__" in piece:
+                        u_raw = piece["__usage__"]
                 text = "".join(parts)
                 if tools and not tcalls:
                     tcalls, text = extract_tool_calls(text, allowed)
@@ -1518,9 +1580,7 @@ class Handler(BaseHTTPRequestHandler):
                     "fallback": state.get("fallback", False),
                     "choices": [{"index": 0, "message": message,
                                  "finish_reason": finish}],
-                    "usage": {"prompt_tokens": len(prompt) // 4,
-                              "completion_tokens": len(text) // 4,
-                              "total_tokens": (len(prompt) + len(text)) // 4},
+                    "usage": openai_usage(u_raw, prompt, text),
                 })
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -1536,6 +1596,7 @@ class Handler(BaseHTTPRequestHandler):
                  "model": raw_model or "agy",
                  "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
             tcalls = []
+            u_raw = None
             if tools or max_tokens or stop:
                 # these need the whole answer before it can be judged: a prompted
                 # tool call is only valid once the JSON is complete, and a stop
@@ -1544,6 +1605,8 @@ class Handler(BaseHTTPRequestHandler):
                 for piece in gen:
                     if isinstance(piece, dict) and "__tools__" in piece:
                         tcalls = piece["__tools__"]
+                    elif isinstance(piece, dict) and "__usage__" in piece:
+                        u_raw = piece["__usage__"]
                     elif isinstance(piece, str):
                         parts.append(piece)
                 text = "".join(parts)
@@ -1563,6 +1626,9 @@ class Handler(BaseHTTPRequestHandler):
                     if isinstance(piece, dict) and "__tools__" in piece:
                         tcalls = piece["__tools__"]
                         continue
+                    if isinstance(piece, dict) and "__usage__" in piece:
+                        u_raw = piece["__usage__"]
+                        continue
                     if not isinstance(piece, str):
                         continue
                     sse({"id": cid, "object": "chat.completion.chunk", "created": created,
@@ -1578,7 +1644,8 @@ class Handler(BaseHTTPRequestHandler):
                          "finish_reason": None}]})
             sse({"id": cid, "object": "chat.completion.chunk", "created": created,
                  "model": raw_model or "agy",
-                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]})
+                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+                 "usage": openai_usage(u_raw, prompt, "")})
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
