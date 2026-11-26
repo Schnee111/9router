@@ -252,6 +252,30 @@ class AgyWorker:
                 return key, len(h)
         return None, 0
 
+    def _explain_miss(self, hashes, model):
+        """Why a turn could not extend a live session.
+
+        Session reuse requires the stored history hashes to be a strict prefix of
+        the incoming ones. A client that compacts, reorders, or rewrites earlier
+        messages never matches, so every turn pays a full replay. Log position and
+        size only — never message content, which can carry credentials.
+        """
+        best = None
+        for e in self.sessions.values():
+            if e["model"] != model:
+                continue
+            h = e["hashes"]
+            if best is None or len(h) > len(best):
+                best = h
+        if best is None:
+            return "no live session for this model"
+        i = 0
+        while i < min(len(best), len(hashes)) and best[i] == hashes[i]:
+            i += 1
+        if i == len(best):
+            return f"stored history not a strict prefix ({len(best)} stored vs {len(hashes)} incoming messages)"
+        return f"diverged at message {i} ({len(best)} stored vs {len(hashes)} incoming)"
+
     def _drop_session(self, key, reason=""):
         e = self.sessions.pop(key, None)
         if not e:
@@ -435,6 +459,8 @@ class AgyWorker:
                     else:
                         prompt_text, images = flatten(segments)
                         self.stats["miss"] += 1
+                        log(f"[{self.profile}] session miss: "
+                            f"{self._explain_miss(hashes, model or '')}")
                 if suffix:
                     prompt_text += suffix
                 if sid is None:
