@@ -43,6 +43,14 @@ services:
       AGY_BRIDGE_BIND: "0.0.0.0"
       AGY_ADMIN_TOKEN: ${AGY_ADMIN_TOKEN:?AGY_ADMIN_TOKEN must be set}
       AGY_TURN_TIMEOUT: "300"
+      # Session cache: the bridge keeps a live ACP session per conversation so a
+      # follow-up turn only sends the new tail instead of replaying the whole
+      # history. The default (4 sessions / 900s idle) thrashes as soon as Hermes
+      # and an editor agent run side by side: the LRU evicts the session the
+      # client is still working in, and the next turn pays a full 1-2MB replay
+      # while the agent loses its plan. Keep room for parallel conversations.
+      AGY_SESSION_MAX: "24"
+      AGY_SESSION_IDLE: "3600"
       TZ: "Asia/Jakarta"
     volumes:
       # The real Antigravity CLI binary, read-only.
