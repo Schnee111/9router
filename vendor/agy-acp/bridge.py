@@ -649,7 +649,8 @@ class ProfilePool:
     def mark(self, profile, status, detail=""):
         if profile == "_primary":
             return
-        self.tested[profile] = {"status": status, "detail": detail[:200],
+        self.tested[profile] = {**self.tested.get(profile, {}),
+                                "status": status, "detail": detail[:200],
                                 "at": time.time()}
         self._save()
 
@@ -659,6 +660,22 @@ class ProfilePool:
             return
         self.tested.setdefault(profile, {})["cooldown_until"] = time.time() + seconds
         self.tested[profile]["cooldown_reason"] = reason[:160]
+        self._save()
+
+    def quota(self, profile, seconds, reason=""):
+        """Park a profile until its (account-level) quota resets.
+
+        Google states the reset window in the banner ("Resets in 3h0m17s"), so the
+        parked window is exactly that long instead of a guessed backoff. The mark
+        survives restarts: without it the next request picked the drained account
+        again and paid the same failed attempt.
+        """
+        if profile == "_primary":
+            return
+        seconds = max(60, min(int(seconds or 0), MAX_QUOTA_COOLDOWN))
+        rec = self.tested.setdefault(profile, {})
+        rec["quota_cooldown_until"] = time.time() + seconds
+        rec["quota_cooldown_reason"] = (reason or "")[:160]
         self._save()
 
     def ensure(self, profile):
@@ -743,6 +760,12 @@ class ProfilePool:
             st = self.tested.get(n, {})
             if st.get("status") in bad:
                 return False
+            # Quota cooldown is model-agnostic for this profile: when Google
+            # returns an account quota banner, the profile goes behind accounts
+            # that have not reported quota. It remains as final fallback after
+            # those accounts are exhausted/unavailable.
+            if (st.get("quota_cooldown_until") or 0) > now:
+                return False
             cd = st.get("cooldown_until") or 0
             return cd <= now
 
@@ -773,6 +796,13 @@ class ProfilePool:
         ordered = list(dict.fromkeys(ordered))
         if not ordered:
             raise RuntimeError("no usable profile")
+
+        # A quota-cooling primary is treated as temporarily unavailable. Preserve
+        # it at the tail as last resort, but do not make every new request pay the
+        # same exhausted attempt until its reset window expires.
+        cooling = [n for n in ordered
+                   if (self.tested.get(n, {}).get("quota_cooldown_until") or 0) > now]
+        ordered = [n for n in ordered if n not in cooling] + cooling
         return ordered
 
     def pick(self, prefer=None):
@@ -789,6 +819,42 @@ POOL = ProfilePool()
 
 BANNER_TOS = "terms of service"
 BANNER_VERIFY = ("verification required", "verify your account")
+# Google reports an exhausted account quota as ordinary assistant text, exactly
+# like a ban banner. Handing that text back to the caller as if it were an
+# answer is why a request appeared to "stick" to the drained account: nothing
+# marked it, so the next request picked it again. Detect it, park the account
+# for the declared reset window, and let the chain move on.
+BANNER_QUOTA = (
+    "individual quota reached",
+    "quota reached",
+    "quota exceeded",
+    "usage limit reached",
+    "limit reached",
+    "upgrade your subscription",
+    "resource_exhausted",
+)
+QUOTA_RESET_RE = re.compile(
+    r"resets?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I)
+# Fallback when the banner carries no parsable reset window.
+DEFAULT_QUOTA_COOLDOWN = int(os.environ.get("AGY_QUOTA_COOLDOWN", "1800"))
+MAX_QUOTA_COOLDOWN = 24 * 3600
+
+
+def is_quota_banner(text):
+    low = (text or "").lower()
+    return any(b in low for b in BANNER_QUOTA)
+
+
+def quota_reset_seconds(text):
+    """Seconds until the banner says the quota resets (default: short backoff)."""
+    m = QUOTA_RESET_RE.search(text or "")
+    if not m:
+        return DEFAULT_QUOTA_COOLDOWN
+    h, mi, s = (int(x) if x else 0 for x in m.groups())
+    total = h * 3600 + mi * 60 + s
+    if total <= 0:
+        return DEFAULT_QUOTA_COOLDOWN
+    return min(total, MAX_QUOTA_COOLDOWN)
 
 
 def turn_with_fallback(prompt, model=None, prefer=None, timeout=None, state=None, images=None,
@@ -829,7 +895,9 @@ def turn_with_fallback(prompt, model=None, prefer=None, timeout=None, state=None
             low = msg.lower()
             if "tos banner" not in low and "verify banner" not in low:
                 log(f"[{name}] turn failed, falling back: {msg[:160]}")
-                if "429" in msg or "quota" in low or "rate" in low or "busy" in low:
+                if "quota banner" in low:
+                    POOL.quota(name, quota_reset_seconds(msg), msg)
+                elif "429" in msg or "quota" in low or "rate" in low or "busy" in low:
                     POOL.cooldown(name, 60 if "busy" in low else 300, msg)
                 if model and any(k in low for k in ("not entitled", "no access",
                         "unsupported model", "unknown model", "model not found",
@@ -860,6 +928,8 @@ def _drain(gen, name):
             settled = True
         elif BANNER_TOS in low:
             settled = True
+        if settled and is_quota_banner(buf):
+            raise RuntimeError("quota banner: " + buf.strip()[:240])
         if settled and BANNER_TOS in low:
             POOL.mark(name, "tos", buf.strip()[:160])
             raise RuntimeError("tos banner")
@@ -870,6 +940,8 @@ def _drain(gen, name):
             yield buf
     if buf and not settled:
         low = buf.lower()
+        if is_quota_banner(buf):
+            raise RuntimeError("quota banner: " + buf.strip()[:240])
         if BANNER_TOS in low:
             POOL.mark(name, "tos", buf.strip()[:160])
             raise RuntimeError("tos banner")
@@ -1290,8 +1362,10 @@ class Handler(BaseHTTPRequestHandler):
             prim = POOL.primary()
             for p in list_profiles():
                 st = POOL.tested.get(p) or {"status": "untested", "detail": ""}
+                quota_until = float(st.get("quota_cooldown_until") or 0)
                 profs.append({"name": p, "status": st.get("status"),
                               "primary": p == prim,
+                              "quota_seconds_left": max(0, int(quota_until - time.time())),
                               "detail": st.get("detail", "")[:120]})
             return self._json(200, {"profiles": profs, "primary": prim})
         if self.path.startswith("/admin"):
@@ -1363,6 +1437,13 @@ class Handler(BaseHTTPRequestHandler):
                     status = "tos"
                 elif "verification required" in low or "verify your account" in low:
                     status = "verify"     # alive but needs Google account verification
+                elif is_quota_banner(text):
+                    # A quota banner is a live answer from a drained account, not a
+                    # healthy turn: record the reset window so routing stops
+                    # preferring this profile until Google restores it.
+                    seconds = quota_reset_seconds(text)
+                    POOL.quota(prof, seconds, text.strip()[:160])
+                    status = "quota"
                 elif not text.strip():
                     status = "error"
                 else:
@@ -1377,7 +1458,7 @@ class Handler(BaseHTTPRequestHandler):
             b = self._body()
             prof = (b.get("profile") or "").strip()
             status = (b.get("status") or "").strip()
-            if prof not in list_profiles() or status not in ("tos", "verify", "ok", "error"):
+            if prof not in list_profiles() or status not in ("tos", "verify", "ok", "error", "quota"):
                 return self._json(400, {"ok": False, "detail": "unknown profile or status"})
             POOL.mark(prof, status, b.get("detail") or "")
             log(f"[{prof}] marked {status} via admin/mark")
