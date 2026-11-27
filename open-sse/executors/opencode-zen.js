@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { DefaultExecutor } from "./default.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { isMuseSparkModel, isOpencodeFreeTierModel } from "../providers/models/helpers.js";
+import { opencodeTlsFetch } from "../services/opencodeTlsClient.js";
 import {
   normalizeResponsesInput,
   clampResponsesCallId,
@@ -268,7 +269,22 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
 
   async execute(args) {
     const credentials = this.prepareRequestCredentials(args);
-    return super.execute({ ...args, credentials });
+    const model = args?.model || args?.body?.model || "";
+    // The free gate is decided by the TLS ClientHello, not by headers or body:
+    // the same request that 429s on native fetch succeeds over the impersonating
+    // client on the oc/ lane. Paid models keep the plain path, because only they
+    // rely on the connection key.
+    if (!isOpencodeFreeTierModel(model)) {
+      return super.execute({ ...args, credentials });
+    }
+    const directFetch = (url, options, proxyUrl) => opencodeTlsFetch(url, {
+      method: options.method,
+      headers: options.headers,
+      body: options.body,
+    }, { signal: options.signal, proxyUrl });
+    // wreq-js tunnels the proxy itself; adapters that cannot must stay on undici.
+    directFetch.proxyCapable = true;
+    return super.execute({ ...args, credentials, directFetch });
   }
 
   buildHeaders(credentials, stream = true, url, model) {
