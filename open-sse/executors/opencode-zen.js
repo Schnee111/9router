@@ -3,6 +3,7 @@ import { DefaultExecutor } from "./default.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { isMuseSparkModel, isOpencodeFreeTierModel } from "../providers/models/helpers.js";
 import { opencodeTlsFetch } from "../services/opencodeTlsClient.js";
+import { applyFingerprintTools } from "../utils/opencodeFingerprint.js";
 import {
   normalizeResponsesInput,
   clampResponsesCallId,
@@ -328,7 +329,12 @@ export class OpenCodeZenExecutor extends DefaultExecutor {
     // Free-tier gate: upstream 403s stream:false even when everything else is valid.
     if (out && typeof out === "object") out.stream = true;
     if (!isResponsesModel(model || body?.model)) {
-      ensureChatFingerprintTools(out);
+      // Match the free lane's attested request exactly: the same tool schemas the
+      // oc/ executor sends (read/shell with their real parameters) plus the <env>
+      // marker and tool_choice "auto". The hand-rolled bash/glob/grep/read quartet
+      // with empty schemas is refused upstream even over the impersonating client.
+      if (isOpencodeFreeTierModel(model || body?.model)) applyFingerprintTools(out, false);
+      else ensureChatFingerprintTools(out);
       return out;
     }
     const normalized = normalizeResponsesInput(out.input);
